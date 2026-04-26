@@ -337,3 +337,152 @@ Open `Evaluate_Fine_Tuned_Model.ipynb`. Update `adapter_path` to point to the `b
 - **ROUGE** — Recall-Oriented Understudy for Gisting Evaluation. Lexical overlap metric family for summarization.
 - **BERTScore** — Evaluation metric that computes token-level cosine similarity using BERT embeddings.
 - **DXA** — Abbreviation for "device-independent pixels" used in OOXML. Unrelated to this project; ignore.
+
+## High-Performance Inference with vLLM
+
+This project can also leverage **vLLM** for faster and more memory-efficient inference compared to standard Hugging Face generation.
+
+vLLM uses **PagedAttention** and optimized GPU scheduling to significantly improve throughput and latency, especially for batch inference or production workloads.
+
+---
+
+### Installation
+
+```bash
+pip install vllm
+```
+
+> Requires a CUDA-enabled GPU. Best supported on Linux or WSL.
+
+---
+
+### Load Model with vLLM
+
+```python
+from vllm import LLM, SamplingParams
+
+llm = LLM(
+    model="meta-llama/Llama-3.2-1B-Instruct",
+    dtype="float16"
+)
+
+sampling_params = SamplingParams(
+    temperature=0.7,
+    top_p=0.9,
+    max_tokens=200
+)
+```
+
+---
+
+### Prompt Template
+
+```python
+def build_prompt(topic, dialogue):
+    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+You are an expert on summarizing conversations considering a particular topic.
+Answer with the summary only.
+<|eot_id|>
+
+<|start_header_id|>user<|end_header_id|>
+Topic: {topic}
+Conversation: {dialogue}
+
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+"""
+```
+
+---
+
+### Generate Output
+
+```python
+prompt = build_prompt(sample["topic"], sample["dialogue"])
+
+outputs = llm.generate([prompt], sampling_params)
+response = outputs[0].outputs[0].text.strip()
+
+print(response)
+```
+
+---
+
+### ️ Using LoRA Adapter with vLLM
+
+vLLM does not directly support PEFT LoRA adapters, so you must merge the adapter into the base model before using it.
+
+#### Merge LoRA Adapter
+
+```python
+from peft import PeftModel
+from transformers import AutoModelForCausalLM
+
+base_model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.2-1B-Instruct",
+    torch_dtype="float16"
+)
+
+model = PeftModel.from_pretrained(base_model, "path_to_adapter")
+
+# Merge LoRA weights into base model
+model = model.merge_and_unload()
+
+model.save_pretrained("merged_model")
+```
+
+#### Load Merged Model in vLLM
+
+```python
+from vllm import LLM
+
+llm = LLM(model="merged_model")
+```
+
+---
+
+### Optional: OpenAI-Compatible API Server
+
+Run:
+
+```bash
+python -m vllm.entrypoints.openai.api_server \
+    --model merged_model \
+    --port 8000
+```
+
+Then query:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="EMPTY"
+)
+
+response = client.chat.completions.create(
+    model="merged_model",
+    messages=[{"role": "user", "content": "Summarize this dialogue..."}],
+)
+
+print(response.choices[0].message.content)
+```
+
+---
+
+### When to Use vLLM
+
+| Scenario | Recommendation |
+|---|---|
+| Training / Fine-tuning | Transformers + PEFT |
+| Small-scale evaluation | Transformers |
+| Fast inference / batch processing | vLLM |
+| Production deployment | vLLM |
+
+---
+
+### Summary
+
+- vLLM enables fast, scalable inference
+- Merge LoRA adapters before using vLLM
+- Ideal for serving and large-scale generation
